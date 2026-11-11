@@ -1976,10 +1976,22 @@ Geef je antwoord ALLEEN als een JSON array van strings, bijvoorbeeld: ["Hoofdger
             prompt += f", featuring {', '.join(ing_list[:5])}"
         prompt += ", culinary magazine style, beautifully plated, studio lighting, high resolution, 4k"
 
-        # Gebruik de actieve multimodal flash image endpoint via de globale API key
-        img_model = 'gemini-3.1-flash-lite-image'
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{img_model}:generateContent?key={ai_provider.api_key}"
-        body = {"contents": [{"parts": [{"text": prompt}]}]}
+        # Zoek eerst naar de speciale Image Provider (ID 2 / modelnaam met image)
+        img_provider = AiProvider.objects.filter(
+            Q(model_name__icontains='image') | Q(name__icontains='image')
+        ).filter(Q(space=request.space) | Q(space__isnull=True)).first() or ai_provider
+
+        model_name = img_provider.model_name
+        if '/' in model_name:
+            model_name = model_name.split('/')[-1]
+        if 'image' not in model_name:
+            model_name = 'gemini-3.1-flash-lite-image'
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={img_provider.api_key}"
+        body = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"responseModalities": ["IMAGE", "TEXT"]}
+        }
         
         try:
             res = requests.post(url, json=body, headers={"Content-Type": "application/json"}, timeout=30)
