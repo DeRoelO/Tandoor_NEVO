@@ -63,17 +63,31 @@ class IngredientParser:
             if not self.ignore_rules:
                 food_name = self.automation.apply_food_automation(food_name)
 
-            # 1. Exact match op bestaande naam of meervoud
+            # 1. Exact match op bestaande naam of meervoud in database
             if food_obj := Food.objects.filter(space=self.request.space).filter(Q(name__iexact=food_name) | Q(plural_name__iexact=food_name)).first():
                 return food_obj
 
-            # 2. Match via NEVO database
+            # 2. Zoek in NEVO database
             results = nevo_helper.search_nevo(food_name, limit=1)
             if results:
                 code = results[0]['code']
-                nevo_food = Food.objects.filter(space=self.request.space, description__contains=f"[NEVO: {code}]").first()
+                nevo_name = results[0]['name']
+                # Zoek eerst of het NEVO-item al bestaat in de space
+                nevo_food = Food.objects.filter(space=self.request.space).filter(
+                    Q(description__contains=f"[NEVO: {code}]") | Q(name__iexact=nevo_name)
+                ).first()
                 if nevo_food:
                     return nevo_food
+
+                # Als het nog niet bestaat, maak het direct aan met NEVO voedingswaarden
+                from cookbook.views.api import sync_food_from_nevo
+                new_food = Food.objects.create(
+                    space=self.request.space,
+                    name=nevo_name,
+                    description=f"[NEVO: {code}] {results[0].get('synonyms', '')}".strip()
+                )
+                sync_food_from_nevo(new_food, results[0])
+                return new_food
 
             # 3. Fallback: als er al een bestaand product is met overeenkomende naam
             if fallback_obj := Food.objects.filter(space=self.request.space).filter(name__icontains=food_name).first():

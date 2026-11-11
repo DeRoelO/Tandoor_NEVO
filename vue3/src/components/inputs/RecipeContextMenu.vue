@@ -6,6 +6,12 @@
                 <v-list-item :to="{ name: 'ModelEditPage', params: {model: 'recipe', id: recipe.id} }" prepend-icon="$edit">
                     {{ $t('Edit') }}
                 </v-list-item>
+                <v-list-item prepend-icon="fa-solid fa-check-double" @click="completeRecipeAction()" :loading="completingRecipe" link>
+                    Compleet maken (NEVO + AI)
+                </v-list-item>
+                <v-list-item prepend-icon="fa-solid fa-wand-magic-sparkles" @click="generateImageAction()" :loading="generatingImage" link>
+                    Foto genereren (AI)
+                </v-list-item>
                 <v-list-item prepend-icon="$mealplan" @click="mealPlanDialog = true">
                     {{ $t('Add_to_Plan') }}
                 </v-list-item>
@@ -71,6 +77,46 @@ const duplicateLoading = ref(false)
 const pantryDialog = ref(false)
 const pantryLoading = ref(false)
 const pantryFoodId = ref<number | undefined>(undefined)
+const completingRecipe = ref(false)
+const generatingImage = ref(false)
+
+async function completeRecipeAction() {
+    if (!props.recipe.id) return
+    completingRecipe.value = true
+    try {
+        const res = await fetch(`/api/recipe/${props.recipe.id}/complete/`, { credentials: 'include', method: 'POST' })
+        const data = await res.json()
+        if (data.status === 'success') {
+            useMessageStore().addMessage(MessageType.INFO, 'Recept succesvol aangevuld met NEVO en trefwoorden!')
+            window.location.reload()
+        } else if (data.error) {
+            useMessageStore().addMessage(MessageType.ERROR, data.error)
+        }
+    } catch (e: any) {
+        useMessageStore().addMessage(MessageType.ERROR, 'Fout bij compleet maken: ' + (e?.message || e))
+    } finally {
+        completingRecipe.value = false
+    }
+}
+
+async function generateImageAction() {
+    if (!props.recipe.id) return
+    generatingImage.value = true
+    try {
+        const res = await fetch(`/api/recipe/${props.recipe.id}/generate_image/`, { credentials: 'include', method: 'POST' })
+        const data = await res.json()
+        if (data.image) {
+            useMessageStore().addMessage(MessageType.INFO, 'Afbeelding succesvol gegenereerd!')
+            window.location.reload()
+        } else if (data.error) {
+            useMessageStore().addMessage(MessageType.ERROR, data.error)
+        }
+    } catch (e: any) {
+        useMessageStore().addMessage(MessageType.ERROR, 'Fout bij genereren van afbeelding: ' + (e?.message || e))
+    } finally {
+        generatingImage.value = false
+    }
+}
 
 /**
  * create a duplicate of the recipe by pulling its current data and creating a new recipe with the same data

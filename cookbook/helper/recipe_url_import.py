@@ -170,20 +170,23 @@ def get_from_scraper(scrape, request):
         for x in scrape.ingredients():
             if x.strip() != '':
                 try:
-                    amount, unit, food, note = ingredient_parser.parse(x)
+                    amount, unit, food_name, note = ingredient_parser.parse(x)
+                    # Resolve to NEVO Food object so we pass the exact existing food ID or matched NEVO product
+                    food_obj = ingredient_parser.get_food(food_name)
+                    unit_obj = ingredient_parser.get_unit(unit) if unit else None
                     ingredient = {
                         'amount': amount,
                         'food': {
-                            'name': food,
+                            'id': food_obj.id if food_obj else None,
+                            'name': food_obj.name if food_obj else food_name,
                         },
-                        'unit': None,
+                        'unit': {
+                            'id': unit_obj.id if unit_obj else None,
+                            'name': unit_obj.name if unit_obj else unit,
+                        } if unit_obj or unit else None,
                         'note': note,
                         'original_text': x
                     }
-                    if unit:
-                        ingredient['unit'] = {
-                            'name': unit,
-                        }
                     recipe_json['steps'][0]['ingredients'].append(ingredient)
                 except Exception:
                     recipe_json['steps'][0]['ingredients'].append({

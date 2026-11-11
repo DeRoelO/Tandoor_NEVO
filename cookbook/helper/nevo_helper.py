@@ -19,7 +19,7 @@ def parse_float(val: str) -> Optional[float]:
         return None
 
 # Meest voorkomende Nederlandse synoniemen & stopwoorden
-STOPWORDS = {'verse', 'vers', 'gedroogde', 'gedroogd', 'geraspte', 'geraspt', 'fijngesneden', 'gesneden', 'gehakte', 'gehakt', 'stukjes', 'stuk', 'stuks', 'tenen', 'teen', 'teentjes', 'teentje', 'in', 'blik', 'pot', 'glas', 'naar', 'smaak', 'rijpe', 'flinke', 'bosje', 'handje', 'takje', 'takjes', 'snufje', 'mespuntje'}
+STOPWORDS = {'verse', 'vers', 'gedroogde', 'gedroogd', 'geraspte', 'geraspt', 'fijngesneden', 'gesneden', 'gehakte', 'gehakt', 'stukjes', 'stuk', 'stuks', 'tenen', 'teen', 'teentjes', 'teentje', 'in', 'blik', 'blikjes', 'blikje', 'pot', 'glas', 'naar', 'smaak', 'rijpe', 'flinke', 'handen', 'handje', 'bosje', 'takje', 'takjes', 'snufje', 'mespuntje', 'milde', 'mild', 'halve', 'extra', 'vergine', 'koudgeperste', 'witte', 'wit', 'bruine', 'bruin', 'groene', 'groen', 'rode', 'rood'}
 
 DUTCH_SYNONYMS = {
     'uien': 'ui',
@@ -44,6 +44,25 @@ DUTCH_SYNONYMS = {
     'lente-uien': 'ui sla',
     'rode ui': 'ui rode',
     'rode uien': 'ui rode',
+    'olijfolie': 'olie olijf',
+    'pijnboompitjes': 'pijnboompitten',
+    'pijnboompit': 'pijnboompitten',
+    'venkelknollen': 'venkel',
+    'venkelknol': 'venkel',
+    'krulpeterselie': 'peterselie vers',
+    'bladpeterselie': 'peterselie vers',
+    'cannellinibonen': 'bonen cannellini',
+    'cannellini': 'bonen cannellini',
+    'polpa': 'tomaat in blik',
+    'platbroden': 'tarwebroodje',
+    'platbrood': 'tarwebroodje',
+    'platbroden': 'tarwebroodje',
+    'libanese': 'tarwebroodje',
+    'rucola': 'sla rucola',
+    'tomaatjes': 'tomaat',
+    'cherrytomaatjes': 'tomaat kers',
+    'zongedroogde tomaten': 'tomaat',
+    'tonijn': 'tonijn in water',
 }
 
 @lru_cache(maxsize=1)
@@ -113,9 +132,14 @@ def search_nevo(query: str, limit: int = 25) -> List[Dict[str, Any]]:
     cleaned_query = clean_query_text(query)
     expanded_terms = [cleaned_query]
 
+    # Map exact terms and synonyms
     for term, target in DUTCH_SYNONYMS.items():
         if term in cleaned_query:
             expanded_terms.append(cleaned_query.replace(term, target))
+            expanded_terms.append(target)
+        for w in cleaned_query.split():
+            if w == term:
+                expanded_terms.append(target)
 
     terms = cleaned_query.split()
     results = []

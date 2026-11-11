@@ -36,6 +36,31 @@
                                                :density="(mobile) ? 'compact' : 'comfortable'"
                                 >
                                 </v-file-upload>
+                                <div class="mt-2 d-flex flex-wrap">
+                                    <v-btn
+                                        variant="tonal"
+                                        color="primary"
+                                        size="small"
+                                        prepend-icon="fa-solid fa-wand-magic-sparkles"
+                                        :loading="generatingImage"
+                                        :disabled="!editingObj.id || generatingImage"
+                                        @click="generateImageAction"
+                                    >
+                                        Foto genereren (AI)
+                                    </v-btn>
+                                    <v-btn
+                                        variant="tonal"
+                                        color="secondary"
+                                        size="small"
+                                        class="ms-2"
+                                        prepend-icon="fa-solid fa-check-double"
+                                        :loading="completingRecipe"
+                                        :disabled="!editingObj.id || completingRecipe"
+                                        @click="completeRecipeAction"
+                                    >
+                                        Compleet maken (NEVO + AI)
+                                    </v-btn>
+                                </div>
                             </v-col>
                             <v-col cols="12" md="6" v-if="editingObj.image">
                                 <v-img style="max-height: 180px" cover class="mb-2" :src="editingObj.image">
@@ -241,6 +266,46 @@ const {fileApiLoading, updateRecipeImage} = useFileApi()
 const file = shallowRef<File | null>(null)
 
 const aiStepSortLoading = ref(false)
+const generatingImage = ref(false)
+const completingRecipe = ref(false)
+
+async function generateImageAction() {
+    if (!editingObj.value.id) return
+    generatingImage.value = true
+    try {
+        const res = await fetch(`/api/recipe/${editingObj.value.id}/generate_image/`, { credentials: 'include', method: 'POST' })
+        const data = await res.json()
+        if (data.image) {
+            editingObj.value.image = data.image + '?t=' + Date.now()
+            useMessageStore().addMessage(MessageType.INFO, 'Afbeelding succesvol gegenereerd!')
+        } else if (data.error) {
+            useMessageStore().addMessage(MessageType.ERROR, data.error)
+        }
+    } catch (e: any) {
+        useMessageStore().addMessage(MessageType.ERROR, 'Fout bij genereren van afbeelding: ' + (e?.message || e))
+    } finally {
+        generatingImage.value = false
+    }
+}
+
+async function completeRecipeAction() {
+    if (!editingObj.value.id) return
+    completingRecipe.value = true
+    try {
+        const res = await fetch(`/api/recipe/${editingObj.value.id}/complete/`, { credentials: 'include', method: 'POST' })
+        const data = await res.json()
+        if (data.status === 'success') {
+            useMessageStore().addMessage(MessageType.INFO, 'Recept succesvol aangevuld met NEVO en trefwoorden!')
+            initializeEditor()
+        } else if (data.error) {
+            useMessageStore().addMessage(MessageType.ERROR, data.error)
+        }
+    } catch (e: any) {
+        useMessageStore().addMessage(MessageType.ERROR, 'Fout bij compleet maken: ' + (e?.message || e))
+    } finally {
+        completingRecipe.value = false
+    }
+}
 
 onMounted(() => {
     initializeEditor()

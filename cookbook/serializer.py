@@ -923,6 +923,24 @@ class FoodSerializer(UniqueFieldsMixin, WritableNestedModelSerializer, ExtendedR
         if food := Food.objects.filter(Q(name__iexact=name) | Q(plural_name__iexact=name)).first():
             return food
 
+        # Auto-match with NEVO before creating an empty Food
+        try:
+            from cookbook.helper import nevo_helper
+            nevo_results = nevo_helper.search_nevo(name, limit=1)
+            if nevo_results:
+                code = nevo_results[0]['code']
+                nevo_name = nevo_results[0]['name']
+                existing_nevo = Food.objects.filter(
+                    Q(description__contains=f"[NEVO: {code}]") | Q(name__iexact=nevo_name)
+                ).first()
+                if existing_nevo:
+                    return existing_nevo
+                # If creating new, set name to official NEVO name and store NEVO code
+                name = nevo_name
+                validated_data['description'] = f"[NEVO: {code}] {nevo_results[0].get('synonyms', '')}".strip()
+        except Exception:
+            pass
+
         space = validated_data.pop('space', self.context['request'].space)
         # supermarket category needs to be handled manually as food.get or create does not create nested serializers unlike a super.create of serializer
         if 'supermarket_category' in validated_data and validated_data['supermarket_category']:
