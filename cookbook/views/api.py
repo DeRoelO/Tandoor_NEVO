@@ -1893,65 +1893,260 @@ class RecipeViewSet(LoggingMixin, viewsets.ModelViewSet, DeleteRelationMixing):
 
     # TODO: refactor API to use post/put/delete or leave as put and change VUE to use list_recipe after creating
     # DRF only allows one action in a decorator action without overriding get_operation_id_base()
+def apply_nutrients_to_food(food, nutrients, space):
+    """
+    Koppelt voedingswaarden (per 100g) aan een Food object.
+    nutrients is een dict met: calories, proteins, carbohydrates, fats, sugars, saturated_fat, fibers, salt
+    """
+    standard_unit = Unit.objects.filter(base_unit__iexact='g', space=space).first()
+    if not standard_unit:
+        standard_unit = Unit.objects.filter(name__iexact='g', space=space).first()
+        if not standard_unit:
+            standard_unit = Unit.objects.create(name='g', base_unit='g', space=space)
+        else:
+            standard_unit.base_unit = 'g'
+            standard_unit.save()
+
+    food.properties_food_amount = 100
+    food.properties_food_unit = standard_unit
+    food.save()
+
+    prop_mapping = {
+        'calories': ['calorieën', 'calories', 'energie', 'enercc (kcal)', 'property-calories'],
+        'proteins': ['eiwitten', 'eiwit', 'protein', 'proteins', 'property-proteins'],
+        'carbohydrates': ['koolhydraten', 'carbohydrates', 'property-carbohydrates'],
+        'fats': ['vetten', 'vet', 'fat', 'fats', 'property-fats'],
+        'sugars': ['suikers', 'suiker', 'sugar', 'sugars'],
+        'saturated_fat': ['verzadigd vet', 'saturated fat'],
+        'fibers': ['vezels', 'vezel', 'fiber', 'fibers'],
+        'salt': ['zout', 'salt', 'sodium']
+    }
+
+    food.properties.all().delete()
+    food_property_list = []
+    for nutrient_key, val in nutrients.items():
+        if val is None:
+            continue
+        aliases = prop_mapping.get(nutrient_key, [])
+        pt = PropertyType.objects.filter(space=space).filter(
+            Q(name__iregex=r'(' + '|'.join(aliases) + ')') | Q(open_data_slug__in=aliases)
+        ).first()
+        if not pt:
+            unit_str = 'kcal' if nutrient_key == 'calories' else 'g'
+            pt_name = aliases[0].capitalize()
+            pt = PropertyType.objects.create(name=pt_name, unit=unit_str, space=space)
+
+        food_property_list.append(
+            Property(property_type=pt, property_amount=round(float(val), 2), space=space)
+        )
+
+    properties = Property.objects.bulk_create(food_property_list, unique_fields=('space', 'property_type',))
+    property_food_relation_list = [Food.properties.through(food_id=food.id, property_id=p.pk) for p in properties]
+    FoodProperty.objects.bulk_create(property_food_relation_list, ignore_conflicts=True, unique_fields=('food_id', 'property_id',))
+
+
+def resolve_or_create_food_with_llm(query, space, ai_provider=None, unit_name=None):
+    """
+    Zoekt in NEVO naar matches.
+    Als er kandidaten zijn, vraagt de LLM om de beste te kiezen OF te beoordelen of het een slechte match is.
+    Als het een slechte match is (of 0 resultaten), maakt de LLM een nieuw Food aan inclusief voedingswaarden en unit conversion.
+    """
+    candidates = nevo_helper.search_nevo(query, limit=5)
+
+    if not ai_provider:
+        ai_provider = AiProvider.objects.filter(Q(space=space) | Q(space__isnull=True)).first()
+
+    # Geen AI geconfigureerd: val terug op beste NEVO kandidaat of simpele aanmaak
+    if not ai_provider or not ai_provider.api_key:
+        if candidates:
+            best = candidates[0]
+            code = best['code']
+            food = Food.objects.filter(space=space, description__contains=f"[NEVO: {code}]").first()
+            if not food:
+                food = Food.objects.filter(space=space, name__iexact=best['name']).first()
+            if not food:
+                food = Food.objects.create(
+                    space=space,
+                    name=best['name'],
+                    description=f"[NEVO: {code}] {best.get('synonyms', '')}".strip()
+                )
+                apply_nutrients_to_food(food, best['nutrients'], space)
+            return food, None
+        food, _ = Food.objects.get_or_create(space=space, name=query)
+        return food, None
+
+    # Wel AI: laat Gemini oordelen
+    cand_summary = [{"code": c["code"], "name": c["name"]} for c in candidates[:5]]
+    prompt = f"""Je bent een voedingsdeskundige en chef-kok.
+We zoeken een passende match in de officiële Nederlandse NEVO voedingsmiddelendatabase voor het ingrediënt '{query}'.
+Eventuele eenheid in recept: '{unit_name or ''}'.
+
+Kandidaten uit NEVO:
+{json.dumps(cand_summary, ensure_ascii=False, indent=2)}
+
+INSTRUCTIE:
+1. Is een van de kandidaten een GOEDE culinaire en nutritionele match voor '{query}'?
+   Geef dan actie "MATCH" met de NEVO code.
+2. Is er GEEN enkele goede match (of zijn de kandidaten wezenlijk anders/slecht)?
+   Geef dan actie "CREATE_NEW". Verzin dan zelf een nette Nederlandse productnaam, realistische voedingswaarden per 100g, en indien van toepassing het geschatte gewicht in grammen voor 1 eenheid van '{unit_name or ''}'.
+
+Antwoord UITSLUITEND in JSON met exact dit formaat:
+Als goede match:
+{{"action": "MATCH", "code": 123}}
+
+Als slechte match of geen match:
+{{
+  "action": "CREATE_NEW",
+  "name": "Nette productnaam",
+  "unit_grams": 150,
+  "nutrients": {{
+    "calories": 120,
+    "proteins": 5.0,
+    "carbohydrates": 10.0,
+    "sugars": 2.0,
+    "fats": 4.0,
+    "saturated_fat": 1.0,
+    "fibers": 2.5,
+    "salt": 0.5
+  }}
+}}"""
+
+    try:
+        model_name = ai_provider.model_name.split('/')[-1]
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={ai_provider.api_key}"
+        body = {"contents": [{"parts": [{"text": prompt}]}]}
+        res = requests.post(url, json=body, headers={"Content-Type": "application/json"}, timeout=12)
+        if res.status_code == 200:
+            resp_text = res.json()['candidates'][0]['content']['parts'][0]['text']
+            clean = strip_json_fences(resp_text)
+            decision = json.loads(clean)
+
+            if decision.get("action") == "MATCH":
+                code = int(decision.get("code"))
+                for c in candidates:
+                    if c["code"] == code:
+                        food = Food.objects.filter(space=space, description__contains=f"[NEVO: {code}]").first()
+                        if not food:
+                            food = Food.objects.filter(space=space, name__iexact=c["name"]).first()
+                        if not food:
+                            food = Food.objects.create(
+                                space=space,
+                                name=c["name"],
+                                description=f"[NEVO: {code}] {c.get('synonyms', '')}".strip()
+                            )
+                            apply_nutrients_to_food(food, c["nutrients"], space)
+                        return food, None
+
+            elif decision.get("action") == "CREATE_NEW":
+                new_name = decision.get("name") or query
+                food = Food.objects.filter(space=space, name__iexact=new_name).first()
+                if not food:
+                    food = Food.objects.create(
+                        space=space,
+                        name=new_name,
+                        description=f"[AI Gecreëerd] {query}".strip()
+                    )
+                nutrients = decision.get("nutrients", {})
+                apply_nutrients_to_food(food, nutrients, space)
+                unit_grams = decision.get("unit_grams")
+                return food, unit_grams
+
+    except Exception as e:
+        print("Fout in resolve_or_create_food_with_llm:", e)
+
+    # Fallback
+    if candidates:
+        best = candidates[0]
+        code = best['code']
+        food = Food.objects.filter(space=space, description__contains=f"[NEVO: {code}]").first()
+        if not food:
+            food = Food.objects.create(
+                space=space,
+                name=best['name'],
+                description=f"[NEVO: {code}] {best.get('synonyms', '')}".strip()
+            )
+            apply_nutrients_to_food(food, best['nutrients'], space)
+        return food, None
+
+    food, _ = Food.objects.get_or_create(space=space, name=query)
+    return food, None
+
+
     @decorators.action(detail=True, methods=['POST'])
     def complete(self, request, pk):
         """
         Recept compleet maken:
-        1. Koppelt alle ingrediënten direct aan de NEVO database
-        2. Kent passende bestaande labels toe via de geconfigureerde Global AI provider
+        1. Koppelt alle ingrediënten aan NEVO, bewaart originele tekst als opmerking,
+           en laat de LLM beoordelen of een match goed is of een nieuw product vereist.
+        2. Voegt automatische eenheidsomrekeningen toe.
+        3. Kent passende bestaande labels toe via de geconfigureerde Global AI provider.
         """
         recipe = self.get_object()
+        ai_provider = AiProvider.objects.filter(Q(space=request.space) | Q(space__isnull=True)).first()
+        gram_unit = Unit.objects.filter(space=request.space, name__in=['g', 'gram']).first()
 
-        # 1. Ingredienten langslopen en koppelen aan NEVO met LLM disambiguatie
         all_food_names = []
         needs_conversion = []
-        gram_unit = Unit.objects.filter(space=request.space, name__in=['g', 'gram']).first()
 
         for step in recipe.steps.all():
             for ing in step.ingredients.all():
                 query = ing.original_text or (ing.food.name if ing.food else "")
-                if query:
-                    all_food_names.append(query)
-                    candidates = nevo_helper.search_nevo(query, limit=5)
-                    if candidates:
-                        best = nevo_helper.disambiguate_with_llm(query, candidates, request.space) if len(candidates) > 1 else candidates[0]
-                        code = best['code']
-                        nevo_food = Food.objects.filter(space=request.space, description__contains=f"[NEVO: {code}]").first()
-                        if not nevo_food:
-                            nevo_food = Food.objects.filter(space=request.space, name__iexact=best['name']).first()
-                        if not nevo_food:
-                            nevo_food = Food.objects.create(
-                                space=request.space,
-                                name=best['name'],
-                                description=f"[NEVO: {code}] {best.get('synonyms', '')}".strip()
-                            )
-                            sync_food_from_nevo(nevo_food, best)
-                        
-                        ing.food = nevo_food
-                        ing.save()
+                if not query:
+                    continue
+                all_food_names.append(query)
 
-                        # Check if this ingredient needs unit conversion (unit is not g/gram/kg/ml/l)
-                        if ing.unit and ing.unit.name.lower() not in ['g', 'gram', 'kg', 'kilogram', 'ml', 'milliliter', 'l', 'liter'] and gram_unit:
-                            has_conv = UnitConversion.objects.filter(
-                                space=request.space,
-                                base_unit=ing.unit,
-                                converted_unit=gram_unit,
-                                food=nevo_food
-                            ).exists()
-                            if not has_conv:
-                                needs_conversion.append({
-                                    "food_id": nevo_food.id,
-                                    "food_name": nevo_food.name,
-                                    "unit_id": ing.unit.id,
-                                    "unit_name": ing.unit.name
-                                })
+                # Bewaar originele tekst in opmerking als die er nog niet staat
+                if ing.original_text:
+                    if not ing.note or ing.note.strip() == '':
+                        ing.note = ing.original_text
+                    elif ing.original_text not in ing.note:
+                        ing.note = f"{ing.note} ({ing.original_text})"[:256]
 
-        # 1b. LLM automatische eenheidsomrekening naar gram genereren
-        ai_provider = AiProvider.objects.filter(Q(space=request.space) | Q(space__isnull=True)).first()
+                unit_str = ing.unit.name if ing.unit else None
+                food_obj, custom_unit_grams = resolve_or_create_food_with_llm(
+                    query=query,
+                    space=request.space,
+                    ai_provider=ai_provider,
+                    unit_name=unit_str
+                )
+                if food_obj:
+                    ing.food = food_obj
+                ing.save()
+
+                # Als de LLM meteen al grammen heeft berekend bij het aanmaken van een nieuw product:
+                if custom_unit_grams and ing.unit and gram_unit and ing.unit.name.lower() not in ['g', 'gram', 'kg', 'kilogram', 'ml', 'milliliter', 'l', 'liter']:
+                    UnitConversion.objects.update_or_create(
+                        space=request.space,
+                        base_unit=ing.unit,
+                        converted_unit=gram_unit,
+                        food=ing.food,
+                        defaults={
+                            "base_amount": 1,
+                            "converted_amount": float(custom_unit_grams),
+                            "created_by": request.user
+                        }
+                    )
+                # Anders toevoegen aan batch-conversie als er nog geen conversie bestaat
+                elif ing.unit and ing.unit.name.lower() not in ['g', 'gram', 'kg', 'kilogram', 'ml', 'milliliter', 'l', 'liter'] and gram_unit and ing.food:
+                    has_conv = UnitConversion.objects.filter(
+                        space=request.space,
+                        base_unit=ing.unit,
+                        converted_unit=gram_unit,
+                        food=ing.food
+                    ).exists()
+                    if not has_conv:
+                        needs_conversion.append({
+                            "food_id": ing.food.id,
+                            "food_name": ing.food.name,
+                            "unit_id": ing.unit.id,
+                            "unit_name": ing.unit.name
+                        })
+
+        # 1b. LLM automatische eenheidsomrekening naar gram genereren voor resterende ingrediënten
         if ai_provider and ai_provider.api_key and needs_conversion and gram_unit:
-            conv_prompt = f"""Je bent een culinair expert en dietist.
-Geef voor elk van de onderstaande ingredienten het geschatte gewicht in gram (g) voor 1 basiseenheid.
-Ingredienten:
+            conv_prompt = f"""Je bent een culinair expert en diëtist.
+Geef voor elk van de onderstaande ingrediënten het geschatte gewicht in gram (g) voor 1 basiseenheid.
+Ingrediënten:
 {json.dumps([{"food": x["food_name"], "unit": x["unit_name"]} for x in needs_conversion], ensure_ascii=False)}
 
 Geef je antwoord UITSLUITEND als een JSON array van objecten:
@@ -1961,8 +2156,8 @@ Geef je antwoord UITSLUITEND als een JSON array van objecten:
             try:
                 model_name = ai_provider.model_name.split('/')[-1]
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={ai_provider.api_key}"
-                body = {{"contents": [{{"parts": [{{"text": conv_prompt}}]}}]}}
-                res = requests.post(url, json=body, headers={{"Content-Type": "application/json"}}, timeout=12)
+                body = {"contents": [{"parts": [{"text": conv_prompt}]}]}
+                res = requests.post(url, json=body, headers={"Content-Type": "application/json"}, timeout=12)
                 if res.status_code == 200:
                     raw_text = res.json()['candidates'][0]['content']['parts'][0]['text']
                     clean_text = strip_json_fences(raw_text)
@@ -1977,19 +2172,17 @@ Geef je antwoord UITSLUITEND als een JSON array van objecten:
                                 base_unit=unit_obj,
                                 converted_unit=gram_unit,
                                 food=food_obj,
-                                defaults={{
+                                defaults={
                                     "base_amount": 1,
                                     "converted_amount": float(grams),
                                     "created_by": request.user
-                                }}
+                                }
                             )
             except Exception as e:
                 print("Fout bij AI eenheidsomrekening:", e)
 
         # 2. Bestaande labels matchen via de Global AI provider
         available_keywords = list(Keyword.objects.filter(space=request.space).values_list('name', flat=True))
-        ai_provider = AiProvider.objects.filter(Q(space=request.space) | Q(space__isnull=True)).first()
-
         if ai_provider and available_keywords and ai_provider.api_key:
             prompt = f"""Gegeven het volgende recept:
 Titel: {recipe.name}
@@ -2003,9 +2196,7 @@ BELANGRIJK: Kies UITSLUITEND labels die letterlijk in bovenstaande lijst staan. 
 Geef je antwoord ALLEEN als een JSON array van strings, bijvoorbeeld: ["Hoofdgerecht", "Pasta"]"""
 
             try:
-                model_name = ai_provider.model_name
-                if '/' in model_name:
-                    model_name = model_name.split('/')[-1]
+                model_name = ai_provider.model_name.split('/')[-1]
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={ai_provider.api_key}"
                 body = {"contents": [{"parts": [{"text": prompt}]}]}
                 res = requests.post(url, json=body, headers={"Content-Type": "application/json"}, timeout=15)
@@ -2023,6 +2214,7 @@ Geef je antwoord ALLEEN als een JSON array van strings, bijvoorbeeld: ["Hoofdger
         recipe.save()
         serializer = self.get_serializer(recipe)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
 
     @decorators.action(detail=True, methods=['POST'])
     def generate_image(self, request, pk):

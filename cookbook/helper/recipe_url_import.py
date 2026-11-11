@@ -210,8 +210,15 @@ Geef je antwoord UITSLUITEND als een JSON array van strings, bijvoorbeeld: ["Sta
             if x.strip() != '':
                 try:
                     amount, unit, food_name, note = ingredient_parser.parse(x)
-                    # Resolve to NEVO Food object so we pass the exact existing food ID or matched NEVO product
-                    food_obj = ingredient_parser.get_food(food_name)
+                    # Originele tekst als notitie/opmerking bewaren
+                    final_note = note.strip() if note else ''
+                    if x.strip():
+                        if not final_note:
+                            final_note = x.strip()
+                        elif x.strip() not in final_note:
+                            final_note = f"{final_note} ({x.strip()})"[:256]
+
+                    food_obj = ingredient_parser.get_food(food_name, unit_name=unit)
                     unit_obj = ingredient_parser.get_unit(unit) if unit else None
                     ingredient = {
                         'amount': amount,
@@ -223,7 +230,7 @@ Geef je antwoord UITSLUITEND als een JSON array van strings, bijvoorbeeld: ["Sta
                             'id': unit_obj.id if unit_obj else None,
                             'name': unit_obj.name if unit_obj else unit,
                         } if unit_obj or unit else None,
-                        'note': note,
+                        'note': final_note,
                         'original_text': x
                     }
                     recipe_json['steps'][0]['ingredients'].append(ingredient)

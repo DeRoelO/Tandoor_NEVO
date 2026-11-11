@@ -52,10 +52,11 @@ class IngredientParser:
                 return Unit.objects.create(space=self.request.space, name=unit_name)
         return None
 
-    def get_food(self, food_name):
+    def get_food(self, food_name, unit_name=None):
         """
         Get or match a food for given space using NEVO Dutch nutrition database.
-        Never creates empty foods if a NEVO product matches.
+        Uses resolve_or_create_food_with_llm to let the LLM disambiguate or create a full product
+        with nutrition values and unit conversion if candidates are poor.
         """
         if not food_name:
             return None
@@ -67,28 +68,18 @@ class IngredientParser:
             if food_obj := Food.objects.filter(space=self.request.space).filter(Q(name__iexact=food_name) | Q(plural_name__iexact=food_name)).first():
                 return food_obj
 
-            # 2. Zoek in NEVO database met LLM disambiguatie
-            candidates = nevo_helper.search_nevo(food_name, limit=5)
-            if candidates:
-                best_match = nevo_helper.disambiguate_with_llm(food_name, candidates, self.request.space) if len(candidates) > 1 else candidates[0]
-                code = best_match['code']
-                nevo_name = best_match['name']
-                # Zoek eerst of het NEVO-item al bestaat in de space
-                nevo_food = Food.objects.filter(space=self.request.space).filter(
-                    Q(description__contains=f"[NEVO: {code}]") | Q(name__iexact=nevo_name)
-                ).first()
-                if nevo_food:
-                    return nevo_food
-
-                # Als het nog niet bestaat, maak het direct aan met NEVO voedingswaarden
-                from cookbook.views.api import sync_food_from_nevo
-                new_food = Food.objects.create(
+            # 2. Match via resolve_or_create_food_with_llm
+            try:
+                from cookbook.views.api import resolve_or_create_food_with_llm
+                food_obj, _ = resolve_or_create_food_with_llm(
+                    query=food_name,
                     space=self.request.space,
-                    name=nevo_name,
-                    description=f"[NEVO: {code}] {best_match.get('synonyms', '')}".strip()
+                    unit_name=unit_name
                 )
-                sync_food_from_nevo(new_food, best_match)
-                return new_food
+                if food_obj:
+                    return food_obj
+            except Exception as e:
+                print("Fallback in get_food:", e)
 
             # 3. Fallback: als er al een bestaand product is met overeenkomende naam
             if fallback_obj := Food.objects.filter(space=self.request.space).filter(name__icontains=food_name).first():
@@ -364,8 +355,15 @@ class IngredientParser:
             note=note,
             original_text=text
         )
+        # Origineel als opmerking bewaren als die nog leeg was
+        if text.strip():
+            if not ingredient.note:
+                ingredient.note = text.strip()
+            elif text.strip() not in ingredient.note:
+                ingredient.note = f"{ingredient.note} ({text.strip()})"[:256]
+
         if food:
-            ingredient.food = self.get_food(food)
+            ingredient.food = self.get_food(food, unit_name=unit)
 
         if unit:
             ingredient.unit = self.get_unit(unit)
