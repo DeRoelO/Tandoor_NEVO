@@ -86,6 +86,7 @@ from cookbook.helper.permission_helper import (CustomIsAdmin, CustomIsOwner, Cus
 from cookbook.helper.recipe_search import RecipeSearch
 from cookbook.helper.recipe_url_import import clean_dict, get_from_youtube_scraper, get_images_from_soup
 from cookbook.helper.shopping_helper import RecipeShoppingEditor
+from cookbook.helper.unit_conversion_helper import UnitConversionHelper
 from cookbook.helper import nevo_helper
 from cookbook.models import (Automation, BookmarkletImport, ConnectorConfig, CookLog, CustomFilter, ExportLog, Food,
                              FoodInheritField, FoodProperty, ImportLog, Ingredient,
@@ -2116,7 +2117,7 @@ class RecipeViewSet(LoggingMixin, viewsets.ModelViewSet, DeleteRelationMixing):
                 ing.save()
 
                 # Als de LLM meteen al grammen heeft berekend bij het aanmaken van een nieuw product:
-                if custom_unit_grams and ing.unit and gram_unit and ing.unit.name.lower() not in ['g', 'gram', 'kg', 'kilogram', 'ml', 'milliliter', 'l', 'liter']:
+                if custom_unit_grams and ing.unit and gram_unit and float(custom_unit_grams) > 0:
                     UnitConversion.objects.update_or_create(
                         space=request.space,
                         base_unit=ing.unit,
@@ -2128,15 +2129,21 @@ class RecipeViewSet(LoggingMixin, viewsets.ModelViewSet, DeleteRelationMixing):
                             "created_by": request.user
                         }
                     )
-                # Anders toevoegen aan batch-conversie als er nog geen conversie bestaat
-                elif ing.unit and ing.unit.name.lower() not in ['g', 'gram', 'kg', 'kilogram', 'ml', 'milliliter', 'l', 'liter'] and gram_unit and ing.food:
-                    has_conv = UnitConversion.objects.filter(
-                        space=request.space,
-                        base_unit=ing.unit,
-                        converted_unit=gram_unit,
-                        food=ing.food
-                    ).exists()
-                    if not has_conv:
+
+        # 1b. Controleer welke ingrediënten nog geen conversiepad naar hun properties_food_unit (meestal gram) hebben
+        uch = UnitConversionHelper(request.space)
+        for step in recipe.steps.all():
+            for ing in step.ingredients.all():
+                if not ing.unit or not ing.food or not ing.food.properties_food_unit:
+                    continue
+                convs = uch.get_conversions(ing)
+                can_convert = any(c.unit == ing.food.properties_food_unit for c in convs)
+                if not can_convert:
+                    # Vermijd dubbele toevoeging in prompt
+                    already_in_list = any(
+                        x["food_id"] == ing.food.id and x["unit_id"] == ing.unit.id for x in needs_conversion
+                    )
+                    if not already_in_list:
                         needs_conversion.append({
                             "food_id": ing.food.id,
                             "food_name": ing.food.name,
@@ -2144,22 +2151,23 @@ class RecipeViewSet(LoggingMixin, viewsets.ModelViewSet, DeleteRelationMixing):
                             "unit_name": ing.unit.name
                         })
 
-        # 1b. LLM automatische eenheidsomrekening naar gram genereren voor resterende ingrediënten
+        # LLM automatische eenheidsomrekening naar gram genereren voor resterende ingrediënten
         if ai_provider and ai_provider.api_key and needs_conversion and gram_unit:
             conv_prompt = f"""Je bent een culinair expert en diëtist.
-Geef voor elk van de onderstaande ingrediënten het geschatte gewicht in gram (g) voor 1 basiseenheid.
+Geef voor elk van de onderstaande ingrediënten het geschatte gewicht in gram (g) voor 1 basiseenheid van de genoemde eenheid (bijv. 1 ml, 1 takje, 1 tl, 1 teen, 1 el, 1 st).
+Als het volume is (zoals ml), geef het gewicht in gram voor 1 ml gebaseerd op de dichtheid (bijv. 1 ml water = 1 g, 1 ml melk = 1.03 g, 1 ml slagroom = 1.01 g of 1 g).
 Ingrediënten:
 {json.dumps([{"food": x["food_name"], "unit": x["unit_name"]} for x in needs_conversion], ensure_ascii=False)}
 
 Geef je antwoord UITSLUITEND als een JSON array van objecten:
 [
-  {{"food": "productnaam", "unit": "eenheid", "grams": 150}}
+  {{"food": "productnaam", "unit": "eenheid", "grams": 1.0}}
 ]"""
             try:
                 model_name = ai_provider.model_name.split('/')[-1]
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={ai_provider.api_key}"
                 body = {"contents": [{"parts": [{"text": conv_prompt}]}]}
-                res = requests.post(url, json=body, headers={"Content-Type": "application/json"}, timeout=12)
+                res = requests.post(url, json=body, headers={"Content-Type": "application/json"}, timeout=15)
                 if res.status_code == 200:
                     raw_text = res.json()['candidates'][0]['content']['parts'][0]['text']
                     clean_text = strip_json_fences(raw_text)
