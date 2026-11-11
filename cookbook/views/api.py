@@ -86,6 +86,7 @@ from cookbook.helper.permission_helper import (CustomIsAdmin, CustomIsOwner, Cus
 from cookbook.helper.recipe_search import RecipeSearch
 from cookbook.helper.recipe_url_import import clean_dict, get_from_youtube_scraper, get_images_from_soup
 from cookbook.helper.shopping_helper import RecipeShoppingEditor
+from cookbook.helper import nevo_helper
 from cookbook.models import (Automation, BookmarkletImport, ConnectorConfig, CookLog, CustomFilter, ExportLog, Food,
                              FoodInheritField, FoodProperty, ImportLog, Ingredient,
                              InviteLink, Keyword, MealPlan, MealType, Property, PropertyType, Recipe, RecipeBook,
@@ -1129,32 +1130,19 @@ class FoodViewSet(LoggingMixin, TreeMixin, DeleteRelationMixing):
     @decorators.action(detail=True, methods=['POST'], )
     def fdc(self, request, pk):
         """
-        updates the food with all possible data from the FDC Api
-        if properties with a fdc_id already exist they will be overridden, if existing properties don't have a fdc_id they won't be changed
+        updates the food with all possible data from NEVO (Dutch RIVM dataset)
         """
         food = self.get_object()
 
-        if request.data['fdc_id']:
+        if request.data.get('fdc_id'):
             food.fdc_id = request.data['fdc_id']
 
         if not food.fdc_id:
-            return JsonResponse({'msg': 'Food has no FDC ID associated.'}, status=400, json_dumps_params={'indent': 4})
+            return JsonResponse({'msg': 'Food has no NEVO code associated.'}, status=400, json_dumps_params={'indent': 4})
 
-        response = safe_request('GET', f'https://api.nal.usda.gov/fdc/v1/food/{food.fdc_id}?api_key={FDC_API_KEY}')
-        if response.status_code == 429:
-            return JsonResponse(
-                {
-                    'msg':
-                        'API Key Rate Limit reached/exceeded, see https://api.data.gov/docs/rate-limits/ for more information. \
-                                Configure your key in Tandoor using environment FDC_API_KEY variable.'
-                },
-                status=429,
-                json_dumps_params={'indent': 4})
-        if response.status_code != 200:
-            return JsonResponse({
-                'msg': f'Error while requesting FDC data using url https://api.nal.usda.gov/fdc/v1/food/{food.fdc_id}?api_key=****'},
-                status=response.status_code,
-                json_dumps_params={'indent': 4})
+        nevo_item = nevo_helper.get_nevo_by_code(int(food.fdc_id))
+        if not nevo_item:
+            return JsonResponse({'msg': f'NEVO code {food.fdc_id} not found in NEVO database.'}, status=404, json_dumps_params={'indent': 4})
 
         food.properties_food_amount = 100
 
@@ -1171,47 +1159,45 @@ class FoodViewSet(LoggingMixin, TreeMixin, DeleteRelationMixing):
         food.save()
 
         try:
-            data = json.loads(response.content)
+            nutrients = nevo_item['nutrients']
+            prop_mapping = {
+                'calories': ['calorieën', 'calories', 'energie', 'enercc (kcal)', 'property-calories'],
+                'proteins': ['eiwitten', 'eiwit', 'protein', 'proteins', 'property-proteins'],
+                'carbohydrates': ['koolhydraten', 'carbohydrates', 'property-carbohydrates'],
+                'fats': ['vetten', 'vet', 'fat', 'fats', 'property-fats'],
+                'sugars': ['suikers', 'suiker', 'sugar', 'sugars'],
+                'saturated_fat': ['verzadigd vet', 'saturated fat'],
+                'fibers': ['vezels', 'vezel', 'fiber', 'fibers'],
+                'salt': ['zout', 'salt', 'sodium']
+            }
+
+            food.properties.all().delete()
 
             food_property_list = []
+            for nutrient_key, val in nutrients.items():
+                if val is None:
+                    continue
+                aliases = prop_mapping.get(nutrient_key, [])
+                pt = PropertyType.objects.filter(space=request.space).filter(
+                    Q(name__iregex=r'(' + '|'.join(aliases) + ')') | Q(open_data_slug__in=aliases)
+                ).first()
+                if not pt:
+                    unit_str = 'kcal' if nutrient_key == 'calories' else 'g'
+                    pt_name = aliases[0].capitalize()
+                    pt = PropertyType.objects.create(name=pt_name, unit=unit_str, space=request.space)
 
-            # delete all properties where the property type has a fdc_id as these should be overridden
-            for fp in food.properties.all():
-                if fp.property_type.fdc_id:
-                    fp.delete()
-
-            for pt in PropertyType.objects.filter(space=request.space, fdc_id__gte=0).all():
-                if pt.fdc_id:
-                    property_found = False
-                    for fn in data['foodNutrients']:
-                        if fn['nutrient']['id'] == pt.fdc_id:
-                            property_found = True
-                            food_property_list.append(
-                                Property(property_type_id=pt.id,
-                                         property_amount=max(0, round(fn['amount'], 2)),
-                                         # sometimes FDC might return negative values which make no sense, set to 0
-                                         space=self.request.space,
-                                         ))
-                    if not property_found:
-                        food_property_list.append(
-                            Property(property_type_id=pt.id, property_amount=0,
-                                     # if field not in FDC data the food does not have that property
-                                     space=self.request.space,
-                                     ))
+                food_property_list.append(
+                    Property(property_type=pt, property_amount=round(val, 2), space=request.space)
+                )
 
             properties = Property.objects.bulk_create(food_property_list, unique_fields=('space', 'property_type',))
-
-            property_food_relation_list = []
-            for p in properties:
-                property_food_relation_list.append(Food.properties.through(food_id=food.id, property_id=p.pk))
-
-            FoodProperty.objects.bulk_create(property_food_relation_list, ignore_conflicts=True,
-                                             unique_fields=('food_id', 'property_id',))
+            property_food_relation_list = [Food.properties.through(food_id=food.id, property_id=p.pk) for p in properties]
+            FoodProperty.objects.bulk_create(property_food_relation_list, ignore_conflicts=True, unique_fields=('food_id', 'property_id',))
 
             return self.retrieve(request, pk)
         except Exception:
             traceback.print_exc()
-            return JsonResponse({'msg': 'there was an error parsing the FDC data, please check the server logs'},
+            return JsonResponse({'msg': 'there was an error parsing the NEVO data, please check server logs'},
                                 status=500, json_dumps_params={'indent': 4})
 
     @extend_schema(
@@ -3140,26 +3126,25 @@ class FdcSearchView(APIView):
                    parameters=[OpenApiParameter(name='query', type=str),
                                OpenApiParameter(name='dataType', description='options: Branded,Foundation,Survey (FNDDS),SR Legacy', type=str, many=True)])
     def get(self, request, format=None):
-        query = self.request.query_params.get('query', None)
-        if query is not None:
-            data_types = self.request.query_params.getlist('dataType', ['Foundation'])
-
-            url = f'https://api.nal.usda.gov/fdc/v1/foods/search?api_key={FDC_API_KEY}&query={quote(query)}&dataType={quote(",".join(data_types))}'
-            response = safe_request('GET', url)
-
-            if response.status_code == 429:
-                return JsonResponse(
-                    {
-                        'msg':
-                            'API Key Rate Limit reached/exceeded, see https://api.data.gov/docs/rate-limits/ for more information. \
-                                Configure your key in Tandoor using environment FDC_API_KEY variable.'
-                    },
-                    status=429,
-                    json_dumps_params={'indent': 4})
-            if response.status_code != 200:
-                return JsonResponse({
-                    'msg': f'Error while requesting FDC data using url https://api.nal.usda.gov/fdc/v1/foods/search?api_key=*****&query={quote(query)}'})
-            return Response(FdcQuerySerializer(context={'request': request}).to_representation(json.loads(response.content)), status=status.HTTP_200_OK)
+        query = self.request.query_params.get('query', '')
+        results = nevo_helper.search_nevo(query, limit=30)
+        foods = []
+        for r in results:
+            desc = r['name']
+            if r['synonyms']:
+                desc += f" ({r['synonyms']})"
+            foods.append({
+                'fdcId': r['code'],
+                'description': desc,
+                'dataType': 'NEVO'
+            })
+        data = {
+            'totalHits': len(foods),
+            'currentPage': 1,
+            'totalPages': 1,
+            'foods': foods
+        }
+        return Response(FdcQuerySerializer(context={'request': request}).to_representation(data), status=status.HTTP_200_OK)
 
 
 @extend_schema(
