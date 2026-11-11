@@ -5,6 +5,7 @@ import unicodedata
 from django.db.models import Q
 
 from cookbook.helper.automation_helper import AutomationEngine
+from cookbook.helper import nevo_helper
 from cookbook.models import Food, Ingredient, Unit
 
 _VULGAR_FRACTIONS = '¼½¾⅐⅑⅒⅓⅔⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞'
@@ -53,9 +54,8 @@ class IngredientParser:
 
     def get_food(self, food_name):
         """
-        Get or create a food for given space respecting possible automations
-        :param food_name: string food
-        :return: None if food passed is invalid, Food object otherwise
+        Get or match a food for given space using NEVO Dutch nutrition database.
+        Never creates empty foods if a NEVO product matches.
         """
         if not food_name:
             return None
@@ -63,10 +63,24 @@ class IngredientParser:
             if not self.ignore_rules:
                 food_name = self.automation.apply_food_automation(food_name)
 
-            if food_obj := Food.objects.filter(space=self.request.space).filter(Q(name=food_name) | Q(plural_name=food_name)).first():
+            # 1. Exact match op bestaande naam of meervoud
+            if food_obj := Food.objects.filter(space=self.request.space).filter(Q(name__iexact=food_name) | Q(plural_name__iexact=food_name)).first():
                 return food_obj
-            else:
-                return Food.objects.create(space=self.request.space, name=food_name)
+
+            # 2. Match via NEVO database
+            results = nevo_helper.search_nevo(food_name, limit=1)
+            if results:
+                code = results[0]['code']
+                nevo_food = Food.objects.filter(space=self.request.space, description__contains=f"[NEVO: {code}]").first()
+                if nevo_food:
+                    return nevo_food
+
+            # 3. Fallback: als er al een bestaand product is met overeenkomende naam
+            if fallback_obj := Food.objects.filter(space=self.request.space).filter(name__icontains=food_name).first():
+                return fallback_obj
+
+            # 4. Alleen als er echt 0 match is in NEVO of database
+            return Food.objects.create(space=self.request.space, name=food_name)
         return None
 
     def parse_fraction(self, x):

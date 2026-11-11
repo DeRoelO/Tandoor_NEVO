@@ -18,7 +18,9 @@ def parse_float(val: str) -> Optional[float]:
     except ValueError:
         return None
 
-# Bekende meervoud/synoniem mappings voor Nederlandse ingrediënten
+# Meest voorkomende Nederlandse synoniemen & stopwoorden
+STOPWORDS = {'verse', 'vers', 'gedroogde', 'gedroogd', 'geraspte', 'geraspt', 'fijngesneden', 'gesneden', 'gehakte', 'gehakt', 'stukjes', 'stuk', 'stuks', 'tenen', 'teen', 'teentjes', 'teentje', 'in', 'blik', 'pot', 'glas', 'naar', 'smaak', 'rijpe', 'flinke', 'bosje', 'handje', 'takje', 'takjes', 'snufje', 'mespuntje'}
+
 DUTCH_SYNONYMS = {
     'uien': 'ui',
     'eieren': 'ei kippen',
@@ -34,6 +36,14 @@ DUTCH_SYNONYMS = {
     'erwten': 'erwt',
     'paprika\'s': 'paprika',
     'courgettes': 'courgette',
+    'knoflooktenen': 'knoflook',
+    'knoflookteen': 'knoflook',
+    'bosuien': 'ui sla',
+    'bosui': 'ui sla',
+    'lente-ui': 'ui sla',
+    'lente-uien': 'ui sla',
+    'rode ui': 'ui rode',
+    'rode uien': 'ui rode',
 }
 
 @lru_cache(maxsize=1)
@@ -87,15 +97,22 @@ def load_nevo_records() -> List[Dict[str, Any]]:
             })
     return records
 
+def clean_query_text(query: str) -> str:
+    # Verwijder leestekens en cijfers
+    q = re.sub(r'[^\w\s-]', ' ', query.lower())
+    q = re.sub(r'\b\d+\b', '', q)
+    words = [w for w in q.split() if w not in STOPWORDS]
+    cleaned = ' '.join(words)
+    return cleaned if cleaned else query.lower()
+
 def search_nevo(query: str, limit: int = 25) -> List[Dict[str, Any]]:
     records = load_nevo_records()
     if not query:
         return records[:limit]
 
-    cleaned_query = query.strip().lower()
+    cleaned_query = clean_query_text(query)
     expanded_terms = [cleaned_query]
 
-    # Check mapping
     for term, target in DUTCH_SYNONYMS.items():
         if term in cleaned_query:
             expanded_terms.append(cleaned_query.replace(term, target))
@@ -108,26 +125,31 @@ def search_nevo(query: str, limit: int = 25) -> List[Dict[str, Any]]:
         name_lower = r['name'].lower()
         score = 0
 
-        # Directe match
+        # Exacte / begin-match krijgt hoogste prioriteit
         for exp in expanded_terms:
             if name_lower == exp:
-                score += 200
+                score += 300
             elif name_lower.startswith(exp + ' ') or name_lower.startswith(exp + '-'):
-                score += 100
+                score += 150
             elif name_lower.startswith(exp):
-                score += 60
+                score += 80
 
-        # Term matching
-        all_terms_found = True
+        # Match op losse woorden
+        matched_words = 0
         for term in terms:
             if term in text:
-                score += 10
+                matched_words += 1
+                score += 15
                 if term in name_lower:
-                    score += 15
-            else:
-                all_terms_found = False
+                    score += 25
 
-        if all_terms_found or score > 40:
+        # Prefereer basisproducten (bijv 'Ui rauw', 'Knoflook rauw') boven bewerkte sauzen
+        if 'rauw' in name_lower:
+            score += 20
+        if 'saus' in name_lower and 'saus' not in cleaned_query:
+            score -= 30
+
+        if matched_words >= 1 or score > 30:
             results.append((score, r))
 
     results.sort(key=lambda x: x[0], reverse=True)
