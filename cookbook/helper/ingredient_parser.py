@@ -36,20 +36,38 @@ class IngredientParser:
 
     def get_unit(self, unit_name):
         """
-        Get or create a unit for given space respecting possible automations
-        :param unit_name: string unit
-        :return: None if unit passed is invalid, Unit object otherwise
+        Get or create a unit for given space respecting possible automations.
+        Rejects non-unit words (adjectives like 'turks', 'gele', 'biologische').
         """
         if not unit_name:
             return None
-        if len(unit_name) > 0:
-            if not self.ignore_rules:
-                unit_name = self.automation.apply_unit_automation(unit_name)
+        unit_name = unit_name.strip()
+        if not unit_name:
+            return None
 
-            if unit_obj := Unit.objects.filter(space=self.request.space).filter(Q(name=unit_name) | Q(plural_name=unit_name)).first():
-                return unit_obj
-            else:
-                return Unit.objects.create(space=self.request.space, name=unit_name)
+        # Woorden die nooit een eenheid zijn
+        non_units = {'turks', 'turkse', 'italiaanse', 'biologisch', 'biologische', 'verse', 'vers',
+                     'gele', 'rode', 'groene', 'witte', 'bruine', 'milde', 'scherpe', 'geraspte'}
+        if unit_name.lower() in non_units:
+            return None
+
+        if not self.ignore_rules:
+            unit_name = self.automation.apply_unit_automation(unit_name)
+
+        if unit_obj := Unit.objects.filter(space=self.request.space).filter(Q(name__iexact=unit_name) | Q(plural_name__iexact=unit_name)).first():
+            return unit_obj
+
+        # Alleen nieuwe eenheden aanmaken als het een aannemelijke culinaire eenheid is
+        standard_unit_keywords = {'g', 'gram', 'kg', 'kilogram', 'mg', 'l', 'liter', 'dl', 'cl', 'ml', 'milliliter',
+                                  'el', 'eetlepel', 'eetlepels', 'tl', 'theelepel', 'theelepels', 'kopje', 'kopjes',
+                                  'cup', 'cups', 'st', 'stuk', 'stuks', 'blik', 'blikje', 'blikjes', 'pot', 'potje',
+                                  'potten', 'pak', 'pakje', 'pakjes', 'pakken', 'zak', 'zakje', 'zakjes', 'zakken',
+                                  'teen', 'tenen', 'teentje', 'teentjes', 'takje', 'takjes', 'pluk', 'plukje',
+                                  'knol', 'stronk', 'krop', 'bol', 'bolletje', 'plak', 'plakje', 'plakjes',
+                                  'snuf', 'snufje', 'scheut', 'scheutje', 'mespunt', 'druppel', 'druppels'}
+        if unit_name.lower() in standard_unit_keywords or len(unit_name) <= 12:
+            return Unit.objects.create(space=self.request.space, name=unit_name)
+
         return None
 
     def get_food(self, food_name, unit_name=None):

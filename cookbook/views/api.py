@@ -1165,9 +1165,9 @@ class FoodViewSet(LoggingMixin, TreeMixin, DeleteRelationMixing):
                 'proteins': ['eiwitten', 'eiwit', 'protein', 'proteins', 'property-proteins'],
                 'carbohydrates': ['koolhydraten', 'carbohydrates', 'property-carbohydrates'],
                 'fats': ['vetten', 'vet', 'fat', 'fats', 'property-fats'],
-                'sugars': ['suikers', 'suiker', 'sugar', 'sugars'],
-                'saturated_fat': ['verzadigd vet', 'saturated fat'],
-                'fibers': ['vezels', 'vezel', 'fiber', 'fibers'],
+                'sugars': ['waarvan suikers', 'suikers', 'suiker', 'sugar', 'sugars'],
+                'saturated_fat': ['waarvan verzadigd', 'verzadigd vet', 'verzadigd', 'saturated fat'],
+                'fibers': ['voedingsvezel', 'vezels', 'vezel', 'fiber', 'fibers'],
                 'salt': ['zout', 'salt', 'sodium']
             }
 
@@ -1179,11 +1179,11 @@ class FoodViewSet(LoggingMixin, TreeMixin, DeleteRelationMixing):
                     continue
                 aliases = prop_mapping.get(nutrient_key, [])
                 pt = PropertyType.objects.filter(space=request.space).filter(
-                    Q(name__iregex=r'(' + '|'.join(aliases) + ')') | Q(open_data_slug__in=aliases)
+                    Q(name__iregex=r'^(' + '|'.join(aliases) + r')$') | Q(open_data_slug__in=aliases)
                 ).first()
                 if not pt:
                     unit_str = 'kcal' if nutrient_key == 'calories' else 'g'
-                    pt_name = aliases[0].capitalize()
+                    pt_name = aliases[0]
                     pt = PropertyType.objects.create(name=pt_name, unit=unit_str, space=request.space)
 
                 food_property_list.append(
@@ -1916,9 +1916,9 @@ def apply_nutrients_to_food(food, nutrients, space):
         'proteins': ['eiwitten', 'eiwit', 'protein', 'proteins', 'property-proteins'],
         'carbohydrates': ['koolhydraten', 'carbohydrates', 'property-carbohydrates'],
         'fats': ['vetten', 'vet', 'fat', 'fats', 'property-fats'],
-        'sugars': ['suikers', 'suiker', 'sugar', 'sugars'],
-        'saturated_fat': ['verzadigd vet', 'saturated fat'],
-        'fibers': ['vezels', 'vezel', 'fiber', 'fibers'],
+        'sugars': ['waarvan suikers', 'suikers', 'suiker', 'sugar', 'sugars'],
+        'saturated_fat': ['waarvan verzadigd', 'verzadigd vet', 'verzadigd', 'saturated fat'],
+        'fibers': ['voedingsvezel', 'vezels', 'vezel', 'fiber', 'fibers'],
         'salt': ['zout', 'salt', 'sodium']
     }
 
@@ -1929,11 +1929,11 @@ def apply_nutrients_to_food(food, nutrients, space):
             continue
         aliases = prop_mapping.get(nutrient_key, [])
         pt = PropertyType.objects.filter(space=space).filter(
-            Q(name__iregex=r'(' + '|'.join(aliases) + ')') | Q(open_data_slug__in=aliases)
+            Q(name__iregex=r'^(' + '|'.join(aliases) + r')$') | Q(open_data_slug__in=aliases)
         ).first()
         if not pt:
             unit_str = 'kcal' if nutrient_key == 'calories' else 'g'
-            pt_name = aliases[0].capitalize()
+            pt_name = aliases[0]
             pt = PropertyType.objects.create(name=pt_name, unit=unit_str, space=space)
 
         food_property_list.append(
