@@ -87,11 +87,11 @@ async function completeRecipeAction() {
     try {
         const res = await fetch(`/api/recipe/${props.recipe.id}/complete/`, { credentials: 'include', method: 'POST', headers: { 'X-CSRFToken': getCookie('csrftoken') || '' } })
         const data = await res.json()
-        if (data.status === 'success') {
+        if (data.id) {
             useMessageStore().addMessage(MessageType.INFO, 'Recept succesvol aangevuld met NEVO en trefwoorden!')
             window.location.reload()
         } else if (data.error) {
-            useMessageStore().addMessage(MessageType.ERROR, data.error)
+            useMessageStore().addMessage(MessageType.ERROR, data.msg || data.error)
         }
     } catch (e: any) {
         useMessageStore().addMessage(MessageType.ERROR, 'Fout bij compleet maken: ' + (e?.message || e))
