@@ -148,7 +148,46 @@ def get_from_scraper(scrape, request):
 
     # assign steps
     try:
-        for i in parse_instructions(scrape.instructions_list()):
+        raw_instructions = parse_instructions(scrape.instructions_list())
+        # Filter obvious header noise (such as 'stap 1', 'Bereiding', 'Ingredienten')
+        cleaned_instructions = []
+        for line in raw_instructions:
+            s_line = line.strip()
+            if not s_line:
+                continue
+            if re.match(r'^(stap|step|fase|bereiding|bereidingswijze)\s*\d*[:.]?$', s_line, re.IGNORECASE):
+                continue
+            cleaned_instructions.append(s_line)
+
+        # Smart LLM step recombining if fragmented
+        if len(cleaned_instructions) > 2 and any(len(x) < 35 for x in cleaned_instructions):
+            try:
+                from cookbook.models import AiProvider
+                from django.db.models import Q
+                import requests
+                import json
+                ai_provider = AiProvider.objects.filter(Q(space=request.space) | Q(space__isnull=True)).first()
+                if ai_provider and ai_provider.api_key:
+                    model_name = ai_provider.model_name.split('/')[-1]
+                    prompt = f"""Hieronder staan recept-instructies die door een web-scraper zijn opgesplitst.
+Schoon deze op tot een logische lijst van kookstappen: voeg zinnen samen die bij elkaar horen en verwijder website-kopjes/titels.
+Instructies:
+{json.dumps(cleaned_instructions, ensure_ascii=False)}
+
+Geef je antwoord UITSLUITEND als een JSON array van strings, bijvoorbeeld: ["Stap 1 tekst...", "Stap 2 tekst..."]"""
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={ai_provider.api_key}"
+                    body = {"contents": [{"parts": [{"text": prompt}]}]}
+                    res = requests.post(url, json=body, headers={"Content-Type": "application/json"}, timeout=10)
+                    if res.status_code == 200:
+                        resp_text = res.json()['candidates'][0]['content']['parts'][0]['text']
+                        clean_json = re.sub(r'```(?:json)?\s*', '', resp_text).strip('` \r\n')
+                        parsed_steps = json.loads(clean_json)
+                        if isinstance(parsed_steps, list) and len(parsed_steps) > 0:
+                            cleaned_instructions = parsed_steps
+            except Exception as e:
+                print("LLM step cleanup fallback:", e)
+
+        for i in cleaned_instructions:
             recipe_json['steps'].append({
                 'instruction': i,
                 'ingredients': [],

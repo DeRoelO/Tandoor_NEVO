@@ -185,3 +185,49 @@ def get_nevo_by_code(code: int) -> Optional[Dict[str, Any]]:
         if r['code'] == code:
             return r
     return None
+
+
+def disambiguate_with_llm(query: str, candidates: List[Dict[str, Any]], space) -> Optional[Dict[str, Any]]:
+    """
+    Wanneer een ingrediënt meerdere mogelijke NEVO-matches oplevert,
+    laat de geconfigureerde LLM de meest logische culinaire keuze maken.
+    """
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+
+    try:
+        from cookbook.models import AiProvider
+        from django.db.models import Q
+        import requests
+        import json
+        import re
+
+        ai_provider = AiProvider.objects.filter(Q(space=space) | Q(space__isnull=True)).first()
+        if not ai_provider or not ai_provider.api_key:
+            return candidates[0]
+
+        cand_summary = [{"code": c["code"], "name": c["name"]} for c in candidates[:5]]
+        prompt = f"""Kies uit de onderstaande officiële NEVO-voedingsmiddelen het product dat culinair gezien het BESTE past bij het ingrediënt '{query}'.
+Kandidaten:
+{json.dumps(cand_summary, ensure_ascii=False, indent=2)}
+
+Geef je antwoord UITSLUITEND als een JSON object met de gekozen code, bijvoorbeeld: {{"code": {cand_summary[0]['code']}}}"""
+
+        model_name = ai_provider.model_name.split('/')[-1]
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={ai_provider.api_key}"
+        body = {"contents": [{"parts": [{"text": prompt}]}]}
+        res = requests.post(url, json=body, headers={"Content-Type": "application/json"}, timeout=8)
+        if res.status_code == 200:
+            resp_text = res.json()['candidates'][0]['content']['parts'][0]['text']
+            clean = re.sub(r'```(?:json)?\s*', '', resp_text).strip('` \r\n')
+            chosen = json.loads(clean)
+            chosen_code = int(chosen.get('code'))
+            for c in candidates:
+                if c['code'] == chosen_code:
+                    return c
+    except Exception as e:
+        print("LLM disambiguation fallback:", e)
+
+    return candidates[0]

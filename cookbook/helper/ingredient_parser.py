@@ -67,11 +67,12 @@ class IngredientParser:
             if food_obj := Food.objects.filter(space=self.request.space).filter(Q(name__iexact=food_name) | Q(plural_name__iexact=food_name)).first():
                 return food_obj
 
-            # 2. Zoek in NEVO database
-            results = nevo_helper.search_nevo(food_name, limit=1)
-            if results:
-                code = results[0]['code']
-                nevo_name = results[0]['name']
+            # 2. Zoek in NEVO database met LLM disambiguatie
+            candidates = nevo_helper.search_nevo(food_name, limit=5)
+            if candidates:
+                best_match = nevo_helper.disambiguate_with_llm(food_name, candidates, self.request.space) if len(candidates) > 1 else candidates[0]
+                code = best_match['code']
+                nevo_name = best_match['name']
                 # Zoek eerst of het NEVO-item al bestaat in de space
                 nevo_food = Food.objects.filter(space=self.request.space).filter(
                     Q(description__contains=f"[NEVO: {code}]") | Q(name__iexact=nevo_name)
@@ -84,9 +85,9 @@ class IngredientParser:
                 new_food = Food.objects.create(
                     space=self.request.space,
                     name=nevo_name,
-                    description=f"[NEVO: {code}] {results[0].get('synonyms', '')}".strip()
+                    description=f"[NEVO: {code}] {best_match.get('synonyms', '')}".strip()
                 )
-                sync_food_from_nevo(new_food, results[0])
+                sync_food_from_nevo(new_food, best_match)
                 return new_food
 
             # 3. Fallback: als er al een bestaand product is met overeenkomende naam

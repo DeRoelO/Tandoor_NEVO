@@ -1902,20 +1902,89 @@ class RecipeViewSet(LoggingMixin, viewsets.ModelViewSet, DeleteRelationMixing):
         """
         recipe = self.get_object()
 
-        # 1. Ingrediënten langslopen en koppelen aan NEVO
+        # 1. Ingredienten langslopen en koppelen aan NEVO met LLM disambiguatie
         all_food_names = []
+        needs_conversion = []
+        gram_unit = Unit.objects.filter(space=request.space, name__in=['g', 'gram']).first()
+
         for step in recipe.steps.all():
             for ing in step.ingredients.all():
                 query = ing.original_text or (ing.food.name if ing.food else "")
                 if query:
                     all_food_names.append(query)
-                    results = nevo_helper.search_nevo(query, limit=1)
-                    if results:
-                        code = results[0]['code']
+                    candidates = nevo_helper.search_nevo(query, limit=5)
+                    if candidates:
+                        best = nevo_helper.disambiguate_with_llm(query, candidates, request.space) if len(candidates) > 1 else candidates[0]
+                        code = best['code']
                         nevo_food = Food.objects.filter(space=request.space, description__contains=f"[NEVO: {code}]").first()
-                        if nevo_food:
-                            ing.food = nevo_food
-                            ing.save()
+                        if not nevo_food:
+                            nevo_food = Food.objects.filter(space=request.space, name__iexact=best['name']).first()
+                        if not nevo_food:
+                            nevo_food = Food.objects.create(
+                                space=request.space,
+                                name=best['name'],
+                                description=f"[NEVO: {code}] {best.get('synonyms', '')}".strip()
+                            )
+                            sync_food_from_nevo(nevo_food, best)
+                        
+                        ing.food = nevo_food
+                        ing.save()
+
+                        # Check if this ingredient needs unit conversion (unit is not g/gram/kg/ml/l)
+                        if ing.unit and ing.unit.name.lower() not in ['g', 'gram', 'kg', 'kilogram', 'ml', 'milliliter', 'l', 'liter'] and gram_unit:
+                            has_conv = UnitConversion.objects.filter(
+                                space=request.space,
+                                base_unit=ing.unit,
+                                converted_unit=gram_unit,
+                                food=nevo_food
+                            ).exists()
+                            if not has_conv:
+                                needs_conversion.append({
+                                    "food_id": nevo_food.id,
+                                    "food_name": nevo_food.name,
+                                    "unit_id": ing.unit.id,
+                                    "unit_name": ing.unit.name
+                                })
+
+        # 1b. LLM automatische eenheidsomrekening naar gram genereren
+        ai_provider = AiProvider.objects.filter(Q(space=request.space) | Q(space__isnull=True)).first()
+        if ai_provider and ai_provider.api_key and needs_conversion and gram_unit:
+            conv_prompt = f"""Je bent een culinair expert en dietist.
+Geef voor elk van de onderstaande ingredienten het geschatte gewicht in gram (g) voor 1 basiseenheid.
+Ingredienten:
+{json.dumps([{"food": x["food_name"], "unit": x["unit_name"]} for x in needs_conversion], ensure_ascii=False)}
+
+Geef je antwoord UITSLUITEND als een JSON array van objecten:
+[
+  {{"food": "productnaam", "unit": "eenheid", "grams": 150}}
+]"""
+            try:
+                model_name = ai_provider.model_name.split('/')[-1]
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={ai_provider.api_key}"
+                body = {{"contents": [{{"parts": [{{"text": conv_prompt}}]}}]}}
+                res = requests.post(url, json=body, headers={{"Content-Type": "application/json"}}, timeout=12)
+                if res.status_code == 200:
+                    raw_text = res.json()['candidates'][0]['content']['parts'][0]['text']
+                    clean_text = strip_json_fences(raw_text)
+                    conversions = json.loads(clean_text)
+                    for c in conversions:
+                        food_obj = Food.objects.filter(space=request.space, name__iexact=c.get("food")).first()
+                        unit_obj = Unit.objects.filter(space=request.space, name__iexact=c.get("unit")).first()
+                        grams = c.get("grams")
+                        if food_obj and unit_obj and grams and float(grams) > 0:
+                            UnitConversion.objects.update_or_create(
+                                space=request.space,
+                                base_unit=unit_obj,
+                                converted_unit=gram_unit,
+                                food=food_obj,
+                                defaults={{
+                                    "base_amount": 1,
+                                    "converted_amount": float(grams),
+                                    "created_by": request.user
+                                }}
+                            )
+            except Exception as e:
+                print("Fout bij AI eenheidsomrekening:", e)
 
         # 2. Bestaande labels matchen via de Global AI provider
         available_keywords = list(Keyword.objects.filter(space=request.space).values_list('name', flat=True))
