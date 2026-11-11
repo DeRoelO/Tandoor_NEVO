@@ -203,7 +203,7 @@ def get_from_scraper(scrape, request):
 
     recipe_json['properties'] = []
     try:
-        recipe_json['properties'] = get_recipe_properties(request.space, scrape.schema.nutrients())
+        recipe_json['properties'] = []  # Let NEVO dynamically calculate real properties from foods
         print(recipe_json['properties'])
     except Exception:
         traceback.print_exc()
