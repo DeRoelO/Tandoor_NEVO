@@ -260,18 +260,29 @@ class Mealie1(Integration):
         self.import_log.imported_recipes = 0
         self.import_log.save()
 
+        def get_dutch_pt(nl_name, en_name, unit, fdc_id=None):
+            pt = PropertyType.objects.filter(space=self.request.space).filter(
+                Q(name__iexact=nl_name) | Q(name__iexact=en_name)
+            ).first()
+            if not pt:
+                defaults = {'unit': unit}
+                if fdc_id:
+                    defaults['fdc_id'] = fdc_id
+                pt = PropertyType.objects.create(name=nl_name, space=self.request.space, **defaults)
+            return pt
+
         property_types_dict = {
-            'calories': PropertyType.objects.get_or_create(name=_('Calories'), space=self.request.space, defaults={'unit': 'kcal', 'fdc_id': 1008})[0],
-            'carbohydrate_content': PropertyType.objects.get_or_create(name=_('Carbohydrates'), space=self.request.space, defaults={'unit': 'g', 'fdc_id': 1005})[0],
-            'cholesterol_content': PropertyType.objects.get_or_create(name=_('Cholesterol'), space=self.request.space, defaults={'unit': 'mg', 'fdc_id': 1253})[0],
-            'fat_content': PropertyType.objects.get_or_create(name=_('Fat'), space=self.request.space, defaults={'unit': 'g', 'fdc_id': 1004})[0],
-            'fiber_content': PropertyType.objects.get_or_create(name=_('Fiber'), space=self.request.space, defaults={'unit': 'g', 'fdc_id': 1079})[0],
-            'protein_content': PropertyType.objects.get_or_create(name=_('Protein'), space=self.request.space, defaults={'unit': 'g', 'fdc_id': 1003})[0],
-            'saturated_fat_content': PropertyType.objects.get_or_create(name=_('Saturated Fat'), space=self.request.space, defaults={'unit': 'g', 'fdc_id': 1258})[0],
-            'sodium_content': PropertyType.objects.get_or_create(name=_('Sodium'), space=self.request.space, defaults={'unit': 'mg', 'fdc_id': 1093})[0],
-            'sugar_content': PropertyType.objects.get_or_create(name=_('Sugar'), space=self.request.space, defaults={'unit': 'g', 'fdc_id': 1063})[0],
-            'trans_fat_content': PropertyType.objects.get_or_create(name=_('Trans Fat'), space=self.request.space, defaults={'unit': 'g', 'fdc_id': 1257})[0],
-            'unsaturated_fat_content': PropertyType.objects.get_or_create(name=_('Unsaturated Fat'), space=self.request.space, defaults={'unit': 'g'})[0],
+            'calories': get_dutch_pt('Calorieën', 'Calories', 'kcal', 1008),
+            'carbohydrate_content': get_dutch_pt('Koolhydraten', 'Carbohydrates', 'g', 1005),
+            'cholesterol_content': get_dutch_pt('Cholesterol', 'Cholesterol', 'mg', 1253),
+            'fat_content': get_dutch_pt('Vetten', 'Fat', 'g', 1004),
+            'fiber_content': get_dutch_pt('Vezels', 'Fiber', 'g', 1079),
+            'protein_content': get_dutch_pt('Eiwitten', 'Protein', 'g', 1003),
+            'saturated_fat_content': get_dutch_pt('Verzadigd vet', 'Saturated Fat', 'g', 1258),
+            'sodium_content': get_dutch_pt('Zout', 'Sodium', 'g', 1093),
+            'sugar_content': get_dutch_pt('Suikers', 'Sugar', 'g', 1063),
+            'trans_fat_content': get_dutch_pt('Transvet', 'Trans Fat', 'g', 1257),
+            'unsaturated_fat_content': get_dutch_pt('Onverzadigd vet', 'Unsaturated Fat', 'g'),
         }
 
         with transaction.atomic():
