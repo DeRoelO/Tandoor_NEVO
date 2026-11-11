@@ -1893,6 +1893,134 @@ class RecipeViewSet(LoggingMixin, viewsets.ModelViewSet, DeleteRelationMixing):
 
     # TODO: refactor API to use post/put/delete or leave as put and change VUE to use list_recipe after creating
     # DRF only allows one action in a decorator action without overriding get_operation_id_base()
+    @decorators.action(detail=True, methods=['POST'])
+    def complete(self, request, pk):
+        """
+        Recept compleet maken:
+        1. Koppelt alle ingrediënten direct aan de NEVO database
+        2. Kent passende bestaande labels toe via de geconfigureerde Global AI provider
+        """
+        recipe = self.get_object()
+
+        # 1. Ingrediënten langslopen en koppelen aan NEVO
+        all_food_names = []
+        for step in recipe.steps.all():
+            for ing in step.ingredients.all():
+                query = ing.original_text or (ing.food.name if ing.food else "")
+                if query:
+                    all_food_names.append(query)
+                    results = nevo_helper.search_nevo(query, limit=1)
+                    if results:
+                        code = results[0]['code']
+                        nevo_food = Food.objects.filter(space=request.space, description__contains=f"[NEVO: {code}]").first()
+                        if nevo_food:
+                            ing.food = nevo_food
+                            ing.save()
+
+        # 2. Bestaande labels matchen via de Global AI provider
+        available_keywords = list(Keyword.objects.filter(space=request.space).values_list('name', flat=True))
+        ai_provider = AiProvider.objects.filter(Q(space=request.space) | Q(space__isnull=True)).first()
+
+        if ai_provider and available_keywords and ai_provider.api_key:
+            prompt = f"""Gegeven het volgende recept:
+Titel: {recipe.name}
+Omschrijving: {recipe.description or ''}
+Ingrediënten: {', '.join(all_food_names[:15])}
+
+Kies uit deze lijst met BESTAANDE labels de labels die van toepassing zijn:
+{json.dumps(available_keywords, ensure_ascii=False)}
+
+BELANGRIJK: Kies UITSLUITEND labels die letterlijk in bovenstaande lijst staan. Verzin GEEN nieuwe labels.
+Geef je antwoord ALLEEN als een JSON array van strings, bijvoorbeeld: ["Hoofdgerecht", "Pasta"]"""
+
+            try:
+                model_name = ai_provider.model_name
+                if '/' in model_name:
+                    model_name = model_name.split('/')[-1]
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={ai_provider.api_key}"
+                body = {"contents": [{"parts": [{"text": prompt}]}]}
+                res = requests.post(url, json=body, headers={"Content-Type": "application/json"}, timeout=15)
+                if res.status_code == 200:
+                    text_resp = res.json()['candidates'][0]['content']['parts'][0]['text']
+                    clean_json = strip_json_fences(text_resp)
+                    matched_tags = json.loads(clean_json)
+                    for tag in matched_tags:
+                        kw = Keyword.objects.filter(space=request.space, name__iexact=tag).first()
+                        if kw:
+                            recipe.keywords.add(kw)
+            except Exception as e:
+                print("Fout bij AI label matching:", e)
+
+        recipe.save()
+        serializer = self.get_serializer(recipe)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @decorators.action(detail=True, methods=['POST'])
+    def generate_image(self, request, pk):
+        """
+        Genereer receptfoto met behulp van de Global AI provider
+        """
+        recipe = self.get_object()
+        ai_provider = AiProvider.objects.filter(Q(space=request.space) | Q(space__isnull=True)).first()
+        if not ai_provider or not ai_provider.api_key:
+            return Response({'error': True, 'msg': 'Geen geldige AI-provider met API key geconfigureerd.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        ing_list = []
+        for step in recipe.steps.all():
+            for ing in step.ingredients.all():
+                if ing.food:
+                    ing_list.append(ing.food.name)
+        
+        prompt = f"Professional appetizing food photography of {recipe.name}"
+        if ing_list:
+            prompt += f", featuring {', '.join(ing_list[:5])}"
+        prompt += ", culinary magazine style, beautifully plated, studio lighting, high resolution, 4k"
+
+        # Gebruik de actieve multimodal flash image endpoint via de globale API key
+        img_model = 'gemini-3.1-flash-lite-image'
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{img_model}:generateContent?key={ai_provider.api_key}"
+        body = {"contents": [{"parts": [{"text": prompt}]}]}
+        
+        try:
+            res = requests.post(url, json=body, headers={"Content-Type": "application/json"}, timeout=30)
+            if res.status_code != 200:
+                url_fb = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key={ai_provider.api_key}"
+                res = requests.post(url_fb, json=body, headers={"Content-Type": "application/json"}, timeout=30)
+            
+            if res.status_code != 200:
+                return Response({'error': True, 'msg': f'Fout bij genereren afbeelding: {res.text[:200]}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+            data = res.json()
+            parts = data['candidates'][0]['content']['parts']
+            image_bytes = None
+            mime_type = 'image/jpeg'
+
+            for p in parts:
+                if 'inlineData' in p:
+                    image_bytes = base64.b64decode(p['inlineData']['data'])
+                    mime_type = p['inlineData'].get('mimeType', 'image/jpeg')
+                    break
+                elif 'inline_data' in p:
+                    image_bytes = base64.b64decode(p['inline_data']['data'])
+                    mime_type = p['inline_data'].get('mime_type', 'image/jpeg')
+                    break
+
+            if not image_bytes:
+                return Response({'error': True, 'msg': 'Geen binaire afbeeldingsdata ontvangen van AI.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+            ext = mimetypes.guess_extension(mime_type) or '.jpeg'
+            img_file = File(io.BytesIO(image_bytes))
+            processed_img = handle_image(request, img_file, ext)
+            recipe.image.save(f'{uuid.uuid4()}_{recipe.pk}{ext}', processed_img)
+            recipe.save()
+
+            serializer = self.get_serializer(recipe)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            traceback.print_exc()
+            return Response({'error': True, 'msg': f'Interne fout bij genereren afbeelding: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
     @decorators.action(detail=True, methods=['PUT'], serializer_class=RecipeShoppingUpdateSerializer, )
     def shopping(self, request, pk):
         if self.request.space.demo:
