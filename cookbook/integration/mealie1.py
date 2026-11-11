@@ -1,3 +1,4 @@
+from cookbook.helper import nevo_helper
 import json
 import re
 import traceback
@@ -65,21 +66,38 @@ class Mealie1(Integration):
 
         foods_dict = {}
         for f in mealie_database['ingredient_foods']:
-            if food := Food.objects.filter(name=f['name'], space=self.request.space).first():
+            food_name = f['name']
+            plural = f.get('plural_name') or ''
+            
+            # 1. Zoek bestaande match op naam of meervoud
+            food = Food.objects.filter(space=self.request.space).filter(
+                Q(name__iexact=food_name) | Q(plural_name__iexact=food_name)
+            ).first()
+
+            # 2. Zoek via NEVO database (zodat we géén leeg nieuw item aanmaken!)
+            if not food:
+                results = nevo_helper.search_nevo(food_name, limit=1)
+                if results:
+                    code = results[0]['code']
+                    food = Food.objects.filter(space=self.request.space, description__contains=f"[NEVO: {code}]").first()
+
+            if food:
                 foods_dict[f['id']] = food.pk
             else:
-                food = {'name': f['name'],
-                        'plural_name': f['plural_name'],
-                        'description': f['description'],
-                        'space': self.request.space}
+                # Alleen als er echt géén enkele NEVO match bestaat
+                food_data = {'name': f['name'],
+                             'plural_name': f['plural_name'],
+                             'description': f['description'],
+                             'space': self.request.space}
 
                 if f['label_id'] and f['label_id'] in supermarket_categories_dict:
-                    food['supermarket_category_id'] = supermarket_categories_dict[f['label_id']]
+                    food_data['supermarket_category_id'] = supermarket_categories_dict[f['label_id']]
 
-                food = Food.objects.create(**food)
+                new_food = Food.objects.create(**food_data)
                 if f['on_hand']:
-                    food.onhand_users.add(self.request.user)
-                foods_dict[f['id']] = food.pk
+                    new_food.onhand_users.add(self.request.user)
+                foods_dict[f['id']] = new_food.pk
+
             self.import_log.imported_recipes += 1
             self.import_log.save()
 
