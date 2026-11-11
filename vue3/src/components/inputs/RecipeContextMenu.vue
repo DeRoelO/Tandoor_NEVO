@@ -60,6 +60,7 @@ import {ErrorMessageType, useMessageStore} from "@/stores/MessageStore.ts";
 import {useRouter} from "vue-router";
 import {useFileApi} from "@/composables/useFileApi.ts";
 import {useI18n} from "vue-i18n";
+import {getCookie} from "@/utils/cookie";
 import PantryBookingDialog from "@/components/dialogs/PantryBookingDialog.vue";
 
 const router = useRouter()
@@ -84,7 +85,7 @@ async function completeRecipeAction() {
     if (!props.recipe.id) return
     completingRecipe.value = true
     try {
-        const res = await fetch(`/api/recipe/${props.recipe.id}/complete/`, { credentials: 'include', method: 'POST' })
+        const res = await fetch(`/api/recipe/${props.recipe.id}/complete/`, { credentials: 'include', method: 'POST', headers: { 'X-CSRFToken': getCookie('csrftoken') || '' } })
         const data = await res.json()
         if (data.status === 'success') {
             useMessageStore().addMessage(MessageType.INFO, 'Recept succesvol aangevuld met NEVO en trefwoorden!')
@@ -103,7 +104,7 @@ async function generateImageAction() {
     if (!props.recipe.id) return
     generatingImage.value = true
     try {
-        const res = await fetch(`/api/recipe/${props.recipe.id}/generate_image/`, { credentials: 'include', method: 'POST' })
+        const res = await fetch(`/api/recipe/${props.recipe.id}/generate_image/`, { credentials: 'include', method: 'POST', headers: { 'X-CSRFToken': getCookie('csrftoken') || '' } })
         const data = await res.json()
         if (data.image) {
             useMessageStore().addMessage(MessageType.INFO, 'Afbeelding succesvol gegenereerd!')

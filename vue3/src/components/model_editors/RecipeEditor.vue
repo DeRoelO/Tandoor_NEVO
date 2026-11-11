@@ -230,6 +230,7 @@ import {ErrorMessageType, MessageType, StructuredMessage, useMessageStore} from 
 import AiActionButton from "@/components/buttons/AiActionButton.vue";
 import NumberScalerDialog from "@/components/inputs/NumberScalerDialog.vue";
 import {useI18n} from "vue-i18n";
+import {getCookie} from "@/utils/cookie";
 import VModelSelect from "@/components/inputs/VModelSelect.vue";
 
 
@@ -273,7 +274,7 @@ async function generateImageAction() {
     if (!editingObj.value.id) return
     generatingImage.value = true
     try {
-        const res = await fetch(`/api/recipe/${editingObj.value.id}/generate_image/`, { credentials: 'include', method: 'POST' })
+        const res = await fetch(`/api/recipe/${editingObj.value.id}/generate_image/`, { credentials: 'include', method: 'POST', headers: { 'X-CSRFToken': getCookie('csrftoken') || '' } })
         const data = await res.json()
         if (data.image) {
             editingObj.value.image = data.image + '?t=' + Date.now()
@@ -292,7 +293,7 @@ async function completeRecipeAction() {
     if (!editingObj.value.id) return
     completingRecipe.value = true
     try {
-        const res = await fetch(`/api/recipe/${editingObj.value.id}/complete/`, { credentials: 'include', method: 'POST' })
+        const res = await fetch(`/api/recipe/${editingObj.value.id}/complete/`, { credentials: 'include', method: 'POST', headers: { 'X-CSRFToken': getCookie('csrftoken') || '' } })
         const data = await res.json()
         if (data.status === 'success') {
             useMessageStore().addMessage(MessageType.INFO, 'Recept succesvol aangevuld met NEVO en trefwoorden!')
