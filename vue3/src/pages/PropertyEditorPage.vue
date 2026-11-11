@@ -17,7 +17,7 @@
                     <tr>
                         <th>{{ $t('Food') }}</th>
                         <th>
-                            <v-btn variant="outlined" block href="https://fdc.nal.usda.gov/food-search" target="_blank" prepend-icon="$search" stacked>{{ $t('FDC_ID') }}</v-btn>
+                            <v-btn variant="outlined" block href="https://nevo-online.rivm.nl/" target="_blank" prepend-icon="$search" stacked>{{ $t('FDC_ID') }}</v-btn>
                         </th>
                         <th>
                             <v-btn variant="outlined" @click="dialog = true" block stacked>{{ $t('Amount') }}</v-btn>
@@ -30,8 +30,8 @@
                                 <span>{{ pt.name }}</span>
                                 <span>
                         <v-chip color="info" size="x-small"><v-icon icon="fa-solid fa-arrow-down-1-9"></v-icon>{{ pt.order }}</v-chip>
-                        <v-chip color="success" size="x-small" v-if="pt.fdcId"><v-icon icon="fa-solid fa-check"></v-icon>FDC</v-chip>
-                        <v-chip color="error" size="x-small" v-if="!pt.fdcId"><v-icon icon="fa-solid fa-times"></v-icon>FDC</v-chip>
+                        <v-chip color="success" size="x-small" v-if="pt.fdcId"><v-icon icon="fa-solid fa-check"></v-icon>NEVO</v-chip>
+                        <v-chip color="error" size="x-small" v-if="!pt.fdcId"><v-icon icon="fa-solid fa-times"></v-icon>NEVO</v-chip>
                         </span>
                                 <model-edit-dialog model="PropertyType" :item="pt"></model-edit-dialog>
                             </v-btn>
@@ -73,7 +73,7 @@
                                            @click="fdcSelectedIngredient = ingredient; fdcDialog = true"></v-btn>
                                     <v-btn @click="updateFoodFdcData(ingredient)" icon="fa-solid fa-arrows-rotate" size="small" density="compact" variant="plain"
                                            v-if="ingredient.food.fdcId"></v-btn>
-                                    <v-btn @click="openFdcPage(ingredient.food.fdcId)" :href="`https://fdc.nal.usda.gov/food-details/${ingredient.food.fdcId}/nutrients`"
+                                    <v-btn @click="openFdcPage(ingredient.food.fdcId)" href="https://nevo-online.rivm.nl/"
                                            target="_blank"
                                            icon="fa-solid fa-arrow-up-right-from-square"
                                            size="small" variant="plain" v-if="ingredient.food.fdcId"></v-btn>

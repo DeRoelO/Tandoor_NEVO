@@ -3,7 +3,7 @@
  * @param fdcId
  */
 export function openFdcPage(fdcId: number){
-    window.open(`https://fdc.nal.usda.gov/food-details/${fdcId}/nutrients`, '_blank')
+    window.open(`https://nevo-online.rivm.nl/`, '_blank')
 }
 
 /**

@@ -1,18 +1,18 @@
 <template>
     <v-dialog max-width="900" v-model="dialog">
         <v-card>
-            <v-closable-card-title :title="$t('Search')" icon="$search" v-model="dialog"></v-closable-card-title>
+            <v-closable-card-title :title="$t('FDC_Search')" icon="$search" v-model="dialog"></v-closable-card-title>
             <v-card-text>
                 <v-text-field v-model="query" :loading="loading" :label="$t('Search')" @keydown.enter="fdcSearch()">
                     <template #append>
                         <v-btn icon="$search" color="success" @click="fdcSearch()"></v-btn>
                     </template>
                 </v-text-field>
-                <v-select multiple v-model="fdcDataTypeSelection" :items="fdcDataTypeOptions" chips></v-select>
+                
 
                 <v-list>
                     <v-list-item v-for="f in fdcQueryResults?.foods" :title="f.description" @click="dialog = false; emit('selected', f.fdcId)">
-                        <v-list-item-subtitle>{{f.dataType}} <v-chip size="small">{{f.fdcId}}</v-chip></v-list-item-subtitle>
+                        <v-list-item-subtitle>NEVO Code: <v-chip size="small" color="primary">{{f.fdcId}}</v-chip></v-list-item-subtitle>
                     </v-list-item>
                 </v-list>
             </v-card-text>

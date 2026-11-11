@@ -43,7 +43,7 @@
                                        @click="fdcDialog = true"></v-btn>
                                 <v-btn @click="updateFoodFdcData()" icon="fa-solid fa-arrows-rotate" size="small" density="compact" variant="plain"
                                        v-if="editingObj.fdcId"></v-btn>
-                                <v-btn @click="openFdcPage(editingObj.fdcId)" :href="`https://fdc.nal.usda.gov/food-details/${editingObj.fdcId}/nutrients`" target="_blank"
+                                <v-btn @click="openFdcPage(editingObj.fdcId)" href="https://nevo-online.rivm.nl/" target="_blank"
                                        icon="fa-solid fa-arrow-up-right-from-square"
                                        size="small" variant="plain" v-if="editingObj.fdcId"></v-btn>
                             </template>
